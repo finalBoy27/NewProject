@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+python-multipart
+moviepy
+faster-whisper
+python-dotenv
+loguru
