@@ -5,3 +5,4 @@ moviepy
 faster-whisper
 python-dotenv
 loguru
+tqdm
