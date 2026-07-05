@@ -3,6 +3,8 @@ import time
 import uuid
 import asyncio
 from typing import Dict, Optional
+from datetime import datetime
+from tqdm import tqdm
 
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -26,7 +28,9 @@ os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
 
 # Application state
 class TaskState:
-    def __init__(self):
+    def __init__(self, original_filename: str):
+        self.original_filename = original_filename
+        self.created_at = datetime.now().isoformat()
         self.status = "queued" # queued, processing, completed, error
         self.progress = 0.0 # percentage
         self.start_time = None
@@ -98,23 +102,46 @@ def process_transcription(task_id: str, file_path: str):
         full_transcript = []
         current_time_stamp = 0.0
         
-        for segment in segments:
-            # Update state
-            current_time_stamp = segment.end
-            if total_duration > 0:
-                progress_percent = min(100.0, (current_time_stamp / total_duration) * 100)
-            else:
-                progress_percent = 100.0
-            state.progress = round(progress_percent, 2)
-            state.elapsed_time = round(time.time() - state.start_time, 2)
-            
-            full_transcript.append(segment.text.strip())
+        # Build a beautiful, real-time progress bar based on audio timestamps
+        with tqdm(
+            total=total_duration,
+            unit=" audio seconds",
+            bar_format="{l_bar}{bar} | {n_fmt}/{total_fmt}s [{elapsed}<{remaining}]",
+        ) as pbar:
+            for segment in segments:
+                # Calculate how many seconds we moved forward
+                segment_duration = segment.end - current_time_stamp
+                
+                # Update progress bar
+                pbar.update(segment_duration)
+                
+                # Update state
+                current_time_stamp = segment.end
+                if total_duration > 0:
+                    progress_percent = min(100.0, (current_time_stamp / total_duration) * 100)
+                else:
+                    progress_percent = 100.0
+                state.progress = round(progress_percent, 2)
+                state.elapsed_time = round(time.time() - state.start_time, 2)
+                
+                full_transcript.append(segment.text.strip())
+
+            # Finish progress bar cleanly (catch silence at the end of the video)
+            if current_time_stamp < total_duration:
+                pbar.update(total_duration - current_time_stamp)
             
         transcript_text = " ".join(full_transcript)
         
-        # Save transcript
+        # Save transcript with datetime suffix for easy identification
         base_name = os.path.splitext(os.path.basename(file_path))[0]
-        output_txt = os.path.join(TRANSCRIPT_DIR, f"{base_name}_transcript.txt")
+        # Extract real base name if it starts with a uuid (e.g. uuid_filename)
+        if "_" in base_name:
+            real_base_name = base_name.split("_", 1)[-1]
+        else:
+            real_base_name = base_name
+            
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_txt = os.path.join(TRANSCRIPT_DIR, f"{real_base_name}_{timestamp}_transcript.txt")
         
         with open(output_txt, "w", encoding="utf-8") as f:
             f.write(transcript_text)
@@ -169,13 +196,30 @@ async def upload_file(
         raise HTTPException(status_code=500, detail="Failed to save file.")
     
     # Initialize task state
-    tasks[task_id] = TaskState()
+    tasks[task_id] = TaskState(original_filename=secure_filename)
     
     # Queue the background task
     background_tasks.add_task(queue_transcription, task_id, file_path)
     
     logger.info(f"Task {task_id} created and queued for file: {file.filename}")
     return {"task_id": task_id, "status": "queued", "message": "File uploaded and queued for processing."}
+
+@app.get("/api/v1/tasks", tags=["Transcription"])
+async def list_tasks(token: str = Depends(verify_token)):
+    """
+    List all tasks, their original filenames, and current status.
+    """
+    task_list = []
+    for t_id, state in tasks.items():
+        task_list.append({
+            "task_id": t_id,
+            "original_filename": state.original_filename,
+            "created_at": state.created_at,
+            "status": state.status,
+            "progress": state.progress,
+            "elapsed_time": state.elapsed_time
+        })
+    return {"tasks": task_list}
 
 @app.get("/api/v1/progress/{task_id}", tags=["Transcription"])
 async def get_progress(task_id: str, token: str = Depends(verify_token)):
