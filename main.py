@@ -89,7 +89,7 @@ def process_transcription(task_id: str, file_path: str):
             audio_path = extracted_audio
             
         logger.info(f"Task {task_id}: Loading Faster-Whisper model...")
-        model = WhisperModel("tiny", device="cpu", compute_type="int8")
+        model = WhisperModel("base", device="cpu", compute_type="int8")
         
         logger.info(f"Task {task_id}: Starting transcription...")
         segments, info = model.transcribe(audio_path, vad_filter=True)
